@@ -2,6 +2,11 @@
 
 Automated jigsaw puzzle solver for [tanggle.io](https://tanggle.io). Intercepts the game's WebSocket protocol to read piece data and send move commands directly.
 
+<img width="1200" height="1194" alt="image" src="https://github.com/user-attachments/assets/7b851a97-9a73-431d-80af-7c5a47d147a6" />
+
+
+[Blog Post about how it works in more depth](https://www.adrianchrysanthou.com/blog/how-i-built-an-automated-jigsaw-puzzle-solver-for-tanggle-io-with-claude-s-help) 
+
 ## How It Works
 
 The solver reverse-engineers tanggle.io's WebSocket protocol (MessagePack) to control the game programmatically:
