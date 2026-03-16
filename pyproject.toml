@@ -1,0 +1,12 @@
+[project]
+name = "tanggle-ai-solver"
+version = "0.1.0"
+description = "Automated jigsaw puzzle solver for tanggle.io"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.40.0",
+    "msgpack>=1.0.0",
+]
+
+[project.scripts]
+tanggle-solver = "tanggle_solver.main:main"

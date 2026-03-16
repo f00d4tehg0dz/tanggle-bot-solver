@@ -1,0 +1,130 @@
+# Tanggle Bot Solver
+
+Automated jigsaw puzzle solver for [tanggle.io](https://tanggle.io). Intercepts the game's WebSocket protocol to read piece data and send move commands directly.
+
+## How It Works
+
+The solver reverse-engineers tanggle.io's WebSocket protocol (MessagePack) to control the game programmatically:
+
+1. **Browser launch** — Opens your installed Chrome via Playwright with a persistent profile (so login sessions survive between runs)
+2. **Login** — Checks for an existing session; if not logged in, opens the login page with credentials pre-filled for you to complete the Cloudflare challenge
+3. **WebSocket interception** — Patches `WebSocket.prototype.send` to capture all game traffic between the client and server
+4. **Game state extraction** — Decodes the initial MessagePack state message to get all piece positions, grid dimensions (`meta`), and board boundaries (`border`)
+5. **Target computation** — Maps each piece ID to its grid cell (`col = id % cols`, `row = id // cols`) and computes target coordinates centered in the board area
+6. **BFS placement** — Places pieces in breadth-first order starting from piece 0, so each piece references an already-placed neighbor for snapping
+7. **Protocol commands** — For each piece, sends the full pickup/move/drop cycle via WebSocket:
+   - `[1, 1]` — mouse down
+   - `[2, piece_id, 0, 20]` — pick up piece
+   - `[0, target_x, target_y]` — move cursor
+   - `[4, target_x, target_y, neighbor_id, None]` — drop near neighbor (triggers server-side snap)
+   - `[1, 0]` — mouse up
+
+### Why WebSocket instead of Computer Vision?
+
+An earlier version used screenshots + OpenCV to detect pieces and match them by color. This approach failed because:
+- Pieces are ~15px on screen — not enough data for reliable matching
+- Frame detection breaks across different puzzle states (empty vs partial vs complete)
+- Mouse drag on empty space pans the viewport, destroying all coordinates
+- Color matching is unreliable for puzzles with similar-colored regions
+
+The WebSocket approach bypasses all of this by talking directly to the game server.
+
+## Setup
+
+Requires Python 3.10+ and Chrome installed.
+
+```bash
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### Login
+
+Copy `.env.example` to `.env` and fill in your tanggle.io credentials:
+
+```bash
+cp .env.example .env
+```
+
+```
+TANGGLE_EMAIL=your-email@example.com
+TANGGLE_PASSWORD=your-password
+```
+
+Tanggle.io uses Cloudflare protection, so login is semi-manual on first run: the solver opens the login page with your credentials pre-filled, then you complete the Cloudflare challenge and click Login. The solver detects the successful login and continues automatically. Subsequent runs skip login (session persists in the Chrome profile at `~/.tanggle-solver/chrome-profile/`).
+
+## Usage
+
+### Solve a puzzle
+
+```bash
+# By UUID
+python -m tanggle_solver.main solve 2xxxxxx4-cxx6-4xxx-xxxxx
+
+# By full URL
+python -m tanggle_solver.main solve https://tanggle.io/play/2xxxxxx4-cxx6-4xxx-xxxxx
+
+# With options
+python -m tanggle_solver.main solve <uuid> --delay 0.2 --cell-size 52 -v
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--delay SEC` | 0.5 | Pause between piece moves (lower = faster but may get rate-limited) |
+| `--cell-size N` | 52 | Grid cell size in game units (0 = auto) |
+| `-v, --verbose` | off | Enable debug logging |
+
+### Switch accounts
+
+Clear the saved Chrome session to log in with a different account:
+
+```bash
+python -m tanggle_solver.main logout
+```
+
+This deletes the persistent Chrome profile at `~/.tanggle-solver/chrome-profile/`. The next run will prompt for a fresh login.
+
+### Capture WebSocket traffic
+
+Useful for debugging or reverse-engineering the protocol further:
+
+```bash
+python -m tanggle_solver.main capture <uuid> --duration 30 -v
+```
+
+During capture, manually move pieces in the browser. The captured MessagePack messages are saved to `screenshots/ws_capture.json`.
+
+## Project Structure
+
+```
+tanggle_solver/
+├── main.py            # CLI entry point with subcommands
+├── config.py          # Credential loading from .env
+├── browser.py         # Playwright browser control + WebSocket hooking
+├── ws_solver.py       # WebSocket protocol-based solver
+└── protocol.py        # Protocol analyzer for captured WS traffic
+```
+
+## Protocol Reference
+
+Tanggle.io uses MessagePack. ey message types:
+
+| Direction | Format | Meaning |
+|-----------|--------|---------|
+| Server→Client | `[1, {uuid, pieces, meta, border, ...}]` | Initial game state |
+| Client→Server | `[0, x, y]` | Cursor position update |
+| Client→Server | `[1, state]` | Mouse button (1=down, 0=up) |
+| Client→Server | `[2, piece_id, 0, 20]` | Pick up piece |
+| Client→Server | `[4, x, y, target_entity, group]` | Drop piece |
+| Server→Client | `[4, player, seq, x, y, entity, group]` | Drop confirmed (group = negative int if snapped) |
+
+The `meta` field is `[cols, rows]` and piece IDs map to grid positions: `col = id % cols`, `row = id // cols`.
+
+## Limitations
+
+- Cell size (52 game units) is empirically determined and may vary for different puzzle configurations — use `--cell-size` to adjust
+- The board origin calculation assumes the puzzle is centered in the border area — this works for all tested puzzles but edge cases may exist
+- Cloudflare login requires manual completion on first run
+- The solver places all pieces to their computed positions; if the cell size is slightly off, pieces will be close but may not snap
