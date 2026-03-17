@@ -38,6 +38,15 @@ Examples:
   # Solve by full URL
   tanggle-solver solve https://tanggle.io/play/25b55ea4-c8d6-4f44-8975-b84a5f9080a5
 
+  # Use PIA VPN rotation on IP block
+  tanggle-solver solve 25b55ea4-... --vpn pia
+
+  # Use NordVPN rotation on IP block
+  tanggle-solver solve 25b55ea4-... --vpn nordvpn
+
+  # Use raw .ovpn files for rotation
+  tanggle-solver solve 25b55ea4-... --vpn openvpn --vpn-dir ./vpn
+
   # Capture WebSocket traffic for protocol analysis
   tanggle-solver capture 25b55ea4-c8d6-4f44-8975-b84a5f9080a5 --duration 30
         """,
@@ -50,6 +59,10 @@ Examples:
     solve_parser.add_argument("puzzle", help="Puzzle UUID or full tanggle.io URL")
     solve_parser.add_argument("--delay", type=float, default=0.5, help="Delay between moves (seconds)")
     solve_parser.add_argument("--cell-size", type=float, default=0, help="Override cell size in game units (0=auto)")
+    solve_parser.add_argument("--vpn", type=str, default=None, choices=["openvpn", "pia", "nordvpn"],
+                              help="VPN provider for IP rotation on 403 blocks")
+    solve_parser.add_argument("--vpn-dir", type=str, default=None,
+                              help="Directory containing .ovpn files (required for --vpn openvpn)")
     solve_parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
 
     # Logout command — clear saved session
@@ -109,13 +122,30 @@ def run_logout():
 
 async def run_solve(args):
     """Run the WebSocket protocol-based solver."""
+    from .config import load_vpn_config
     from .ws_solver import WsSolver
+
+    # CLI flags override .env settings
+    vpn_provider = getattr(args, "vpn", None)
+    vpn_dir = getattr(args, "vpn_dir", None)
+
+    # Fall back to .env if CLI flags not provided
+    if not vpn_provider:
+        vpn_cfg = load_vpn_config()
+        if vpn_cfg:
+            vpn_provider = vpn_cfg.provider
+            vpn_dir = vpn_dir or vpn_cfg.vpn_dir
+
+    if vpn_provider:
+        print(f"VPN rotation enabled: {vpn_provider}" + (f" ({vpn_dir})" if vpn_dir else ""))
 
     solver = WsSolver(
         puzzle_url=args.url,
         credentials=args.credentials,
         move_delay=args.delay,
         cell_size_override=args.cell_size,
+        vpn_provider=vpn_provider,
+        vpn_dir=vpn_dir,
     )
     await solver.solve()
 

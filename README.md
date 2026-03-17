@@ -4,7 +4,6 @@ Automated jigsaw puzzle solver for [tanggle.io](https://tanggle.io). Intercepts 
 
 <img width="1200" height="1194" alt="image" src="https://github.com/user-attachments/assets/7b851a97-9a73-431d-80af-7c5a47d147a6" />
 
-
 [Blog Post about how it works in more depth](https://www.adrianchrysanthou.com/blog/how-i-built-an-automated-jigsaw-puzzle-solver-for-tanggle-io-with-claude-s-help) 
 
 ## How It Works
@@ -79,7 +78,43 @@ python -m tanggle_solver.main solve <uuid> --delay 0.2 --cell-size 52 -v
 |------|---------|-------------|
 | `--delay SEC` | 0.5 | Pause between piece moves (lower = faster but may get rate-limited) |
 | `--cell-size N` | 52 | Grid cell size in game units (0 = auto) |
+| `--vpn PROVIDER` | off | VPN provider for IP rotation on 403 blocks (`openvpn`, `pia`, `nordvpn`) |
+| `--vpn-dir DIR` | — | Directory containing `.ovpn` files (required when `--vpn openvpn`) |
 | `-v, --verbose` | off | Enable debug logging |
+
+### VPN Rotation (IP Block Bypass)
+
+If tanggle.io blocks your IP with a 403 Forbidden, the solver can automatically rotate through VPN servers and retry. Three providers are supported:
+
+**Private Internet Access (PIA)**
+
+Requires the [PIA desktop app](https://www.privateinternetaccess.com/) installed with the CLI enabled.
+
+```bash
+python -m tanggle_solver.main solve <uuid> --vpn pia
+```
+
+Rotates through ~26 PIA regions (US, Canada, UK, EU, Asia-Pacific). The solver calls `piactl` to switch regions automatically.
+
+**NordVPN**
+
+Requires the [NordVPN desktop app](https://nordvpn.com/) installed.
+
+```bash
+python -m tanggle_solver.main solve <uuid> --vpn nordvpn
+```
+
+Rotates through ~20 NordVPN countries. The solver calls the `nordvpn` CLI to switch servers automatically.
+
+**Raw OpenVPN Configs**
+
+Drop `.ovpn` files into a directory and point the solver at it. Requires [OpenVPN](https://openvpn.net/) installed and an elevated terminal (admin privileges needed for TUN/TAP).
+
+```bash
+python -m tanggle_solver.main solve <uuid> --vpn openvpn --vpn-dir ./vpn
+```
+
+**How it works:** When the solver navigates to the puzzle and gets a 403, it disconnects the current VPN, connects to the next server/config, relaunches the browser with the new IP, and retries. This repeats until a connection succeeds or all servers are exhausted.
 
 ### Switch accounts
 
@@ -109,7 +144,9 @@ tanggle_solver/
 ├── config.py          # Credential loading from .env
 ├── browser.py         # Playwright browser control + WebSocket hooking
 ├── ws_solver.py       # WebSocket protocol-based solver
+├── vpn.py             # VPN manager (OpenVPN, PIA, NordVPN) with rotation
 └── protocol.py        # Protocol analyzer for captured WS traffic
+vpn/                   # Drop .ovpn files here for OpenVPN rotation
 ```
 
 ## Protocol Reference
@@ -133,3 +170,5 @@ The `meta` field is `[cols, rows]` and piece IDs map to grid positions: `col = i
 - The board origin calculation assumes the puzzle is centered in the border area — this works for all tested puzzles but edge cases may exist
 - Cloudflare login requires manual completion on first run
 - The solver places all pieces to their computed positions; if the cell size is slightly off, pieces will be close but may not snap
+- VPN rotation with OpenVPN requires admin/elevated terminal privileges for TUN/TAP interface creation
+- PIA and NordVPN rotation require their respective desktop apps to be installed and logged in

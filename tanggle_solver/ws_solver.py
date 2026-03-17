@@ -14,6 +14,7 @@ import msgpack
 
 from .browser import TanggleBrowser
 from .config import TanggleCredentials
+from .vpn import VpnProvider, create_vpn
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ class WsSolver:
     """Solves tanggle.io puzzles using the WebSocket protocol directly."""
 
     def __init__(self, puzzle_url: str, credentials: Optional[TanggleCredentials] = None,
-                 move_delay: float = 0.5, cell_size_override: float = 0):
+                 move_delay: float = 0.5, cell_size_override: float = 0,
+                 vpn_provider: Optional[str] = None, vpn_dir: Optional[str] = None):
         self.puzzle_url = puzzle_url
         self.credentials = credentials
         self.move_delay = move_delay
@@ -53,15 +55,54 @@ class WsSolver:
         self.pieces: list[Piece] = []
         self.board: Optional[BoardInfo] = None
         self._state_id: int = 0
+        self.vpn: Optional[VpnProvider] = None
+        if vpn_provider:
+            self.vpn = create_vpn(vpn_provider, vpn_dir)
 
     async def solve(self):
-        """Full solving pipeline using WebSocket protocol."""
+        """Full solving pipeline using WebSocket protocol.
+
+        If a VPN directory was provided and the site returns 403 Forbidden,
+        the solver rotates to the next .ovpn config and retries automatically.
+        """
         try:
-            # Launch and navigate
+            # Connect to VPN first if configured
+            if self.vpn and self.vpn.has_configs:
+                logger.info("VPN rotation enabled — connecting to first VPN...")
+                if not await self.vpn.connect_next():
+                    logger.error("Failed to connect to any VPN")
+                    return
+
+            # Launch and navigate (with VPN rotation on 403)
             await self.browser.launch()
             if self.credentials:
                 await self.browser.login(self.credentials)
-            await self.browser.navigate_to_puzzle(self.puzzle_url)
+
+            status = await self.browser.navigate_to_puzzle(self.puzzle_url)
+
+            # Rotate VPN on 403 Forbidden
+            while status == 403 and self.vpn and self.vpn.has_configs:
+                logger.warning(
+                    f"IP blocked (403). Rotating VPN... "
+                    f"({self.vpn.configs_remaining} configs remaining)"
+                )
+                if not await self.vpn.connect_next():
+                    logger.error("All VPN configs exhausted — cannot bypass 403")
+                    return
+
+                # Close and relaunch browser to use the new IP
+                await self.browser.close()
+                await asyncio.sleep(2)
+                self.browser = TanggleBrowser()
+                await self.browser.launch()
+                if self.credentials:
+                    await self.browser.login(self.credentials)
+                status = await self.browser.navigate_to_puzzle(self.puzzle_url)
+
+            if status == 403:
+                logger.error("Still blocked after all VPN rotations")
+                return
+
             await self.browser.wait_for_game_ready(timeout=30)
 
             # Wait a moment for WebSocket messages to accumulate
@@ -111,6 +152,8 @@ class WsSolver:
             raise
         finally:
             await self.browser.close()
+            if self.vpn:
+                await self.vpn.cleanup()
 
     async def _read_game_state(self) -> bool:
         """Read the initial game state from captured WebSocket messages."""

@@ -468,14 +468,21 @@ class TanggleBrowser:
     async def is_logged_in(self) -> bool:
         """Check if already logged into tanggle.io (e.g. from a previous session)."""
         try:
-            await self._page.goto("https://tanggle.io", wait_until="networkidle", timeout=15000)
-            # Check for signs of being logged in (profile menu, avatar, etc.)
+            await self._page.goto(
+                "https://tanggle.io/account/settings",
+                wait_until="networkidle", timeout=15000,
+            )
+            # If the page shows a "Log In" button, we're not logged in.
+            # If it shows account settings content, we are.
             logged_in = await self._page.evaluate("""
                 () => {
-                    // If there's no login button visible, we're likely logged in
-                    const loginBtn = document.querySelector('a[href="/login"]');
-                    const signInText = document.body.innerText.includes('Sign in');
-                    return !loginBtn && !signInText;
+                    const text = document.body.innerText;
+                    // Look for signs we're NOT logged in
+                    const hasLogIn = !!document.querySelector('button, a')
+                        && Array.from(document.querySelectorAll('button, a'))
+                            .some(el => el.textContent.trim().match(/^Log\\s*In$/i));
+                    const hasSignIn = text.includes('Sign in');
+                    return !hasLogIn && !hasSignIn;
                 }
             """)
             return logged_in
@@ -485,10 +492,9 @@ class TanggleBrowser:
     async def login(self, credentials: TanggleCredentials, wait_callback=None):
         """Log into tanggle.io if not already logged in.
 
-        Checks for an existing session first (from the persistent Chrome
-        profile). If already logged in, returns immediately. Otherwise
-        opens the login page with credentials pre-filled and waits for
-        the user to complete the Cloudflare challenge.
+        Navigates to /account/settings and clicks the "Log In" button
+        to open the login modal. Pre-fills credentials so the user only
+        needs to complete the Cloudflare challenge and submit.
 
         Args:
             credentials: Email/password to pre-fill (user still submits manually).
@@ -499,18 +505,37 @@ class TanggleBrowser:
             logger.info("Already logged in (existing session)")
             return
 
-        logger.info("Opening login page...")
-        await self._page.goto("https://tanggle.io/login", wait_until="networkidle", timeout=30000)
+        logger.info("Opening account settings page...")
+        await self._page.goto(
+            "https://tanggle.io/account/settings",
+            wait_until="networkidle", timeout=30000,
+        )
 
-        # Pre-fill credentials so the user only needs to solve Cloudflare + click submit
+        # Click the "Log In" button to open the login modal
+        logger.info("Clicking Log In button to open modal...")
+        try:
+            login_btn = self._page.locator('button, a').filter(has_text="Log In").first
+            await login_btn.click(timeout=10000)
+            await asyncio.sleep(1)  # Wait for modal to open
+        except Exception as e:
+            logger.warning(f"Could not click Log In button: {e}")
+            logger.info("Waiting for user to open login modal manually...")
+
+        # Pre-fill credentials in the modal
         if credentials.email:
             try:
-                await self._page.fill('input[name="email"], input[type="email"]', credentials.email)
+                await self._page.fill(
+                    'input[name="email"], input[type="email"]',
+                    credentials.email, timeout=5000,
+                )
             except Exception:
                 logger.debug("Could not pre-fill email field")
         if credentials.password:
             try:
-                await self._page.fill('input[name="password"], input[type="password"]', credentials.password)
+                await self._page.fill(
+                    'input[name="password"], input[type="password"]',
+                    credentials.password, timeout=5000,
+                )
             except Exception:
                 logger.debug("Could not pre-fill password field")
 
@@ -519,12 +544,23 @@ class TanggleBrowser:
         if wait_callback:
             await wait_callback()
 
-        # Poll until we leave the login page (max 5 minutes)
+        # Poll until the login modal closes / page shows logged-in state (max 5 min)
         timeout = 300
         start = time.time()
         while time.time() - start < timeout:
-            url = self._page.url
-            if "/login" not in url and "tanggle.io" in url:
+            # Check if we're now logged in (modal closed, account info visible)
+            logged_in = await self._page.evaluate("""
+                () => {
+                    // Check if a login modal is still visible
+                    const modal = document.querySelector('[role="dialog"], .modal');
+                    if (modal && modal.offsetParent !== null) return false;
+                    // Check if Log In button is gone
+                    const btns = Array.from(document.querySelectorAll('button, a'));
+                    const hasLogIn = btns.some(el => el.textContent.trim().match(/^Log\\s*In$/i));
+                    return !hasLogIn;
+                }
+            """)
+            if logged_in:
                 logger.info("Login successful")
                 await asyncio.sleep(1)
                 return
@@ -532,10 +568,20 @@ class TanggleBrowser:
 
         raise RuntimeError("Login timed out — user did not complete login within 5 minutes")
 
-    async def navigate_to_puzzle(self, puzzle_url: str):
-        """Navigate to a tanggle.io puzzle page."""
+    async def navigate_to_puzzle(self, puzzle_url: str) -> int:
+        """Navigate to a tanggle.io puzzle page.
+
+        Returns the HTTP status code (200 on success, 403 if blocked, etc.).
+        """
         logger.info(f"Navigating to {puzzle_url}")
-        await self._page.goto(puzzle_url, wait_until="networkidle", timeout=30000)
+        response = await self._page.goto(puzzle_url, wait_until="networkidle", timeout=30000)
+
+        status = response.status if response else 0
+        logger.info(f"Page response status: {status}")
+
+        if status == 403:
+            logger.warning("Got 403 Forbidden — IP is likely blocked")
+            return 403
 
         # Wait for the canvas to appear (puzzle loaded)
         try:
@@ -555,6 +601,8 @@ class TanggleBrowser:
         parts = puzzle_url.rstrip("/").split("/")
         uuid = parts[-1] if parts else "unknown"
         self._puzzle_info = PuzzleInfo(uuid=uuid)
+
+        return status
 
     async def get_game_state(self) -> dict:
         """Extract the current PixiJS game state."""
