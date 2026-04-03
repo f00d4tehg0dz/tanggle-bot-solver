@@ -7,6 +7,7 @@ pieces in their correct grid positions. No CV, no screenshots needed.
 
 import asyncio
 import logging
+import random
 from dataclasses import dataclass
 from typing import Optional
 
@@ -143,7 +144,15 @@ class WsSolver:
                 if (i + 1) % 50 == 0:
                     logger.info(f"  Progress: {i + 1}/{len(queue)} attempted, {placed} placed")
 
-                await asyncio.sleep(self.move_delay)
+                # Randomize delay between pieces to appear more human
+                jitter = self.move_delay * random.uniform(0.5, 1.8)
+                await asyncio.sleep(jitter)
+
+                # Occasionally pause longer (like a human thinking)
+                if random.random() < 0.08:
+                    think_pause = random.uniform(1.0, 3.5)
+                    logger.debug(f"  Simulating think pause: {think_pause:.1f}s")
+                    await asyncio.sleep(think_pause)
 
             logger.info(f"Done! Placed {placed}/{len(queue)} pieces")
 
@@ -346,23 +355,23 @@ class WsSolver:
             logger.warning(f"Piece {piece.piece_id}: WS not ready")
             return False
 
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(random.uniform(0.06, 0.18))
 
         # Pick up the piece
         await self._send_ws([2, piece.piece_id, 0, 20])
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(random.uniform(0.08, 0.25))
 
         # Move cursor to target
         await self._send_ws([0, piece.target_x, piece.target_y])
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(random.uniform(0.08, 0.25))
 
         # Drop the piece — specify the neighbor to trigger snap
         drop_target = neighbor_id if neighbor_id is not None else "canvas"
         await self._send_ws([4, piece.target_x, piece.target_y, drop_target, None])
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(random.uniform(0.06, 0.18))
 
         # Mouse up
         await self._send_ws([1, 0])
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(random.uniform(0.06, 0.18))
 
         return True
